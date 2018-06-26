@@ -3,13 +3,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
+#include <unistd.h>
 
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
-#include <arpa/inet.h>
+#include <sys/syslog.h>
+#include <sys/types.h>
 
+#include <arpa/inet.h>
 #include <net/if.h>
 #include <net/pfvar.h>
+
+#include "errorlog.h"
 
 #define FAILURE -1
 #define SUCCESS 1
@@ -58,29 +65,50 @@ struct Unified2IDSEvent
 };
 
 struct record {
-    uint32_t r_type;
-    uint32_t r_len;
+    uint32_t type;
+    uint32_t len;
     uint8_t  *data;    
 };
 
-int get_record(FILE *, struct record *);
+int debug;
+int get_record(int, struct record *);
 int table_add_addr(const char * tbl, uint32_t *ip);
 
 int main(int argc, char *argv[])
 {
-	struct record rec;
+	struct rlimit		rlim_ptr;
+	struct record 		rec;
 	struct Unified2IDSEvent *ids_ev;
-	char logfile[] = "/var/snort/log/merged.log";
-/*	char logfile[] = "./merged.log"; */
-	FILE *log;
-	memset(&rec, 0, sizeof(rec));
+	char 			logfile[] = "/var/snort/log/merged.log";
+	int			i, log;
 
-	if ((log = fopen(logfile, "r")) < 0) {
-	    printf("fopen error: %s\n", strerror(errno));
+	debug = 1;
+
+	log_open(argv[0], LOG_PID, LOG_DAEMON);
+
+        if (getrlimit(RLIMIT_NOFILE, &rlim_ptr) < 0)
+            printf("rlimit failed %s", strerror(errno));
+
+        for (i = 3; i <= (int)rlim_ptr.rlim_cur; i++)
+            close(i);
+
+        if (debug == 0) 
+            if (daemon(0, 0) < 0)
+                log_die("Failed to daemonize", errno);
+
+
+	if (pledge("stdio pf rpath", NULL) == -1) {
+	    printf("pledge error: %s\n", strerror(errno));
 	    exit(-1);
 	}
 
-	fseek(log, 0, SEEK_END);
+	memset(&rec, 0, sizeof(rec));
+
+	if ((log = open(logfile, O_RDONLY)) < 0)
+	    log_syserr("open() error: %s\n", strerror(errno));
+
+	if (lseek(log, 0, SEEK_END) == -1)
+	    log_syserr("lseek() error: ");
 
 	while (1) {
 	    if (get_record(log, &rec) != SUCCESS) {
@@ -88,9 +116,9 @@ int main(int argc, char *argv[])
 		sleep(3);
 	    }
 
-/*	    printf("Type: %d Length %d Offset %d\n", rec.r_type, rec.r_len, ftell(log)); */
+/*	    printf("Type: %d Length %d\n", rec.type, rec.len); */
 
-	    if (rec.r_type == UNIFIED2_IDS_EVENT_VLAN) {
+	    if (rec.type == UNIFIED2_IDS_EVENT_VLAN) {
 		ids_ev = (struct Unified2IDSEvent *)rec.data;
 		if (ntohl(ids_ev->signature_id) == 1)
 		    sigid_1(&rec);
@@ -105,10 +133,14 @@ int sigid_1(struct record *r)
 	int i;
 
 	ip = ntohl( ((struct Unified2IDSEvent *)r->data)->ip_source );
-	printf("%u.%u.%u.%u\n", TO_IP(ip));
+	log_msg("SNID_1: ip blocK: %u.%u.%u.%u\n", TO_IP(ip));
 
-	if (table_add_addr("testable", &((struct Unified2IDSEvent *)r->data)->ip_source ))
-	    printf("Error adding addr to table\n");
+	if (!debug) {
+/*	    if (table_add_addr("testable", &((struct Unified2IDSEvent *)r->data)->ip_source ))
+*		printf("Error adding addr to table\n");
+*/
+	    log_msg("not debug\n");
+	}	
 }
 
 int table_add_addr(const char * tbl, uint32_t *ip)
@@ -148,69 +180,69 @@ int table_add_addr(const char * tbl, uint32_t *ip)
 	close(fd);
 }
 
-int get_record(FILE *fp, struct record *r) 
+int get_record(int lfd, struct record *r) 
 {
 	size_t hbytes;
 	size_t dbytes;
-     
-	/* read type and length */ 
+	size_t start, off;
 
+	/* read type and length */ 	
+
+	if ((start = lseek(lfd, 0, SEEK_CUR)) == -1)
+	    log_syserr("lseek() error: ");
+
+	off = 0;
 	for(;;) {
+	    hbytes = pread(lfd, r, sizeof(uint32_t) * 2, start);
+	    if (hbytes == 0) {
+		log_msg("EOF - sleeping\n");
+		sleep(3);
+		continue;
+	    } else if (hbytes == -1) {
+		log_msg("pread() error: ");
+		sleep(3);
+		continue;
+	    }
 
-	    hbytes = fread(r, 1, sizeof(uint32_t) * 2, fp);
-	    if (hbytes == 0 || hbytes != sizeof(uint32_t) * 2) {
+	    off += hbytes;
+	    r->type = ntohl(r->type);
+	    r->len = ntohl(r->len);
 
-		if (ferror(fp)) {
-		    printf("ferror(): %s\n", strerror(errno));
-		    clearerr(fp);
-		}
+	    if ((r->data = malloc(r->len)) == NULL) {
+		log_msg("malloc() error %s %d\n", strerror(errno), r->len);
+		sleep(3);
+		continue;
+	    }
 
-		if (feof(fp)) {
-		    printf("feof() sleeping\n");
+	    dbytes = pread(lfd, r->data, r->len, off);
+
+	    if (dbytes <= 0) {
+		if (dbytes == 0) {
+		    log_msg("EOF - sleeping\n");
 		    sleep(3);
-		    clearerr(fp);
+		} else if (dbytes == -1) {
+		    log_msg("pread() error: ");
+		    sleep(3);
+		}
+		free(r->data);
+		continue;		
+	    } else {
+		off += dbytes;
+		if (dbytes < r->len) {			/* SHORT READ */
+		    log_msg("short pread()");
+		    free(r->data);
 		    continue;
 		}
-		printf("seeking1\n");
-		sleep(3);
-		fseek(fp, -(hbytes), SEEK_CUR);
-		continue;
+		/* FALL THROUGH */
 	    }
-
-	    r->r_type = ntohl(r->r_type);
-	    r->r_len = ntohl(r->r_len);
-
-	    if ((r->data = malloc(r->r_len)) == NULL) {
-		printf("malloc() error %s %d\n", strerror(errno), r->r_len);
-		sleep(3);
-		fseek(fp, -(hbytes), SEEK_CUR);
-		continue;
-	    }
-
-	    dbytes = fread(r->data, 1, r->r_len, fp);
-	    if (dbytes == 0 || dbytes != r->r_len) {
-
-		if (ferror(fp)) {
-		    printf("ferror(): %s\n", strerror(errno));
-		    clearerr(fp);
-		}
-
-		if (feof(fp)) {
-		    printf("feof() sleeping\n");
-		    sleep(3);
-		    clearerr(fp);
-		    continue;
-		}
-		printf("seeking1\n");
-		fseek(fp, -(hbytes + dbytes), SEEK_CUR);
-		continue;
-	    }
-
 	    break;
 	}
+	if (lseek(lfd, off, SEEK_CUR) == -1)
+	    log_syserr("lseek() error: ");
 
-/*	if (r->r_type != UNIFIED2_PACKET || nbytes < ntohl(((Serial_Unified2Packet*)r->data)->packet_len))
+/*	if (r->type != UNIFIED2_PACKET || nbytes < ntohl(((Serial_Unified2Packet*)r->data)->packet_len))
 *            return FAILURE;
 */
 	return SUCCESS;
 }
+
