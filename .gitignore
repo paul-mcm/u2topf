@@ -1,2 +1,4 @@
+rc.d/u2topfd
 u2topfd
+private.h
 *.o

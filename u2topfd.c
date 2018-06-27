@@ -1,4 +1,4 @@
-#include <errno.h>
+ #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +17,7 @@
 #include <net/pfvar.h>
 
 #include "errorlog.h"
+#include "private.h"
 
 #define FAILURE -1
 #define SUCCESS 1
@@ -73,6 +74,7 @@ struct record {
 int debug;
 int get_record(int, struct record *);
 int table_add_addr(const char * tbl, uint32_t *ip);
+int signid_1(struct record *);
 
 int main(int argc, char *argv[])
 {
@@ -121,13 +123,13 @@ int main(int argc, char *argv[])
 	    if (rec.type == UNIFIED2_IDS_EVENT_VLAN) {
 		ids_ev = (struct Unified2IDSEvent *)rec.data;
 		if (ntohl(ids_ev->signature_id) == 1)
-		    sigid_1(&rec);
+		    signid_1(&rec);
 	    }
 	    free(rec.data);
 	}
 }
 
-int sigid_1(struct record *r)
+int signid_1(struct record *r)
 {
 	uint32_t ip;
 	int i;
@@ -135,10 +137,9 @@ int sigid_1(struct record *r)
 	ip = ntohl( ((struct Unified2IDSEvent *)r->data)->ip_source );
 	log_msg("SNID_1: ip blocK: %u.%u.%u.%u\n", TO_IP(ip));
 
-	if (!debug) {
-	    if (table_add_addr("smtp_blacklist", &((struct Unified2IDSEvent *)r->data)->ip_source ))
-		printf("Error adding addr to table\n");
-	}	
+	if (!debug)
+	    if (table_add_addr(SID_1, &((struct Unified2IDSEvent *)r->data)->ip_source ))
+		printf("Error adding addr to table %s\n", SID_1);
 }
 
 int table_add_addr(const char * tbl, uint32_t *ip)
