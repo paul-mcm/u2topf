@@ -82,7 +82,7 @@ int main(int argc, char *argv[])
 	char 			logfile[] = "/var/snort/log/merged.log";
 	int			i, log;
 
-	debug = 1;
+	debug = 0;
 
 	log_open(argv[0], LOG_PID, LOG_DAEMON);
 
@@ -112,7 +112,7 @@ int main(int argc, char *argv[])
 
 	while (1) {
 	    if (get_record(log, &rec) != SUCCESS) {
-		printf("get_record() failure\n");
+		log_msg("get_record() failure\n");
 		sleep(3);
 	    }
 
@@ -194,7 +194,6 @@ int get_record(int lfd, struct record *r)
 	    off = 0;
 	    hbytes = pread(lfd, r, sizeof(uint32_t) * 2, start);
 	    if (hbytes == 0) {
-		log_msg("EOF - sleeping\n");
 		sleep(3);
 		continue;
 	    } else if (hbytes == -1) {
@@ -217,7 +216,6 @@ int get_record(int lfd, struct record *r)
 
 	    if (dbytes <= 0) {
 		if (dbytes == 0) {
-		    log_msg("EOF - sleeping\n");
 		    sleep(3);
 		} else if (dbytes == -1) {
 		    log_msg("pread() error: ");
