@@ -136,10 +136,8 @@ int sigid_1(struct record *r)
 	log_msg("SNID_1: ip blocK: %u.%u.%u.%u\n", TO_IP(ip));
 
 	if (!debug) {
-/*	    if (table_add_addr("testable", &((struct Unified2IDSEvent *)r->data)->ip_source ))
-*		printf("Error adding addr to table\n");
-*/
-	    log_msg("not debug\n");
+	    if (table_add_addr("smtp_blacklist", &((struct Unified2IDSEvent *)r->data)->ip_source ))
+		printf("Error adding addr to table\n");
 	}	
 }
 
@@ -191,8 +189,9 @@ int get_record(int lfd, struct record *r)
 	if ((start = lseek(lfd, 0, SEEK_CUR)) == -1)
 	    log_syserr("lseek() error: ");
 
-	off = 0;
 	for(;;) {
+
+	    off = 0;
 	    hbytes = pread(lfd, r, sizeof(uint32_t) * 2, start);
 	    if (hbytes == 0) {
 		log_msg("EOF - sleeping\n");
