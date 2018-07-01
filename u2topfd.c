@@ -229,6 +229,7 @@ int get_record(int lfd, struct record *r)
 		if (dbytes < r->len) {			/* SHORT READ */
 		    log_msg("short pread()");
 		    free(r->data);
+		    sleep(3);
 		    continue;
 		}
 		/* FALL THROUGH */
